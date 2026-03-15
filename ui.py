@@ -33,7 +33,6 @@ from file_ops import (
     ensure_pvm,
     list_vm_bundles,
     remove_tree,
-    replace_tree,
 )
 
 
@@ -80,6 +79,8 @@ class VmHandyWindow(QMainWindow):
         self.local_list_label = QLabel("Local folder VMs")
         self.source_vm_list = QListWidget()
         self.local_vm_list = QListWidget()
+        self.source_space_label = QLabel("Available: No folder selected")
+        self.local_space_label = QLabel("Available: No folder selected")
         self.source_vm_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
         self.local_vm_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
         self.progress_bar = QProgressBar()
@@ -92,13 +93,11 @@ class VmHandyWindow(QMainWindow):
         self.log_output.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self.copy_button = QPushButton("Copy To Local")
-        self.keep_button = QPushButton("Refresh Lists")
         self.delete_button = QPushButton("Delete Remote VM")
         self.replace_button = QPushButton("Copy VM To Remote")
-        self.refresh_button = QPushButton("Refresh VM Lists")
+        self.refresh_button = QPushButton("Refresh Lists")
 
         self.copy_button.clicked.connect(self.copy_to_local)
-        self.keep_button.clicked.connect(self.keep_local_copy)
         self.delete_button.clicked.connect(self.delete_selected_vm)
         self.replace_button.clicked.connect(self.copy_to_remote)
         self.refresh_button.clicked.connect(self.refresh_vm_lists)
@@ -134,7 +133,6 @@ class VmHandyWindow(QMainWindow):
         layout.addWidget(QLabel("Local destination"), 1, 0)
         layout.addWidget(self.local_folder_input, 1, 1)
         layout.addWidget(local_button, 1, 2)
-        layout.addWidget(self.refresh_button, 2, 2)
         return group
 
     def _build_vm_lists_group(self) -> QGroupBox:
@@ -144,6 +142,8 @@ class VmHandyWindow(QMainWindow):
         layout.addWidget(self.local_list_label, 0, 1)
         layout.addWidget(self.source_vm_list, 1, 0)
         layout.addWidget(self.local_vm_list, 1, 1)
+        layout.addWidget(self.source_space_label, 2, 0)
+        layout.addWidget(self.local_space_label, 2, 1)
         return group
 
     def _build_actions_group(self) -> QGroupBox:
@@ -152,7 +152,7 @@ class VmHandyWindow(QMainWindow):
         layout.addWidget(self.copy_button)
         layout.addWidget(self.delete_button)
         layout.addWidget(self.replace_button)
-        layout.addWidget(self.keep_button)
+        layout.addWidget(self.refresh_button)
         return group
 
     def _build_status_group(self) -> QGroupBox:
@@ -179,6 +179,8 @@ class VmHandyWindow(QMainWindow):
         source_folder = self._folder_path(self.source_folder_input)
         local_folder = self._folder_path(self.local_folder_input)
         self._set_list_labels(source_folder, local_folder)
+        self._set_space_label(self.source_space_label, source_folder)
+        self._set_space_label(self.local_space_label, local_folder)
         self._populate_vm_list(
             self.source_vm_list,
             source_folder,
@@ -196,6 +198,17 @@ class VmHandyWindow(QMainWindow):
         local_text = str(local_folder) if local_folder is not None else "No folder selected"
         self.source_list_label.setText(f"Remote folder VMs: {source_text}")
         self.local_list_label.setText(f"Local folder VMs: {local_text}")
+
+    def _set_space_label(self, label: QLabel, folder: Path | None) -> None:
+        if folder is None:
+            label.setText("Available: No folder selected")
+            return
+        try:
+            free_space = available_bytes(folder)
+        except Exception as exc:  # noqa: BLE001
+            label.setText(f"Available: Unable to read ({exc})")
+            return
+        label.setText(f"Available: {self._format_bytes(free_space)}")
 
     def _populate_vm_list(self, widget: QListWidget, folder: Path | None, preferred_name: str = "") -> None:
         current_name = preferred_name or self._selected_vm_name(widget)
@@ -253,49 +266,18 @@ class VmHandyWindow(QMainWindow):
             return
 
         local_vm = selection.local_vm
-        if not can_write_to_folder(selection.local_parent):
-            self._show_error(f"No write permission for local destination: {selection.local_parent}")
-            return
-
-        vm_size = compute_total_size(selection.source_vm)
-        free_space = available_bytes(selection.local_parent)
-        if vm_size > free_space:
-            self._show_error("Not enough free space on the local drive for this VM.")
-            return
-
-        overwrite = False
-        action_text = f"Copy {selection.source_vm.name} from remote to local folder."
-        if local_vm.exists():
-            confirmed = QMessageBox.question(
-                self,
-                "Overwrite Local VM",
-                f"Overwrite the existing local VM?\n\n{local_vm}",
-            )
-            if confirmed != QMessageBox.StandardButton.Yes:
-                return
-            overwrite = True
-            action_text = f"Overwrite local VM {local_vm.name} with the remote copy."
-
-        self._append_log(f"About to: {action_text}")
-
-        self._run_action(
-            PendingAction(
-                label="Copy to local completed",
-                runner=lambda: copy_tree_with_progress(
-                    selection.source_vm,
-                    local_vm,
-                    self._progress_callback,
-                    overwrite=overwrite,
-                ),
-            )
+        self._start_copy_action(
+            source=selection.source_vm,
+            destination=local_vm,
+            destination_folder=selection.local_parent,
+            permission_error=f"No write permission for local destination: {selection.local_parent}",
+            not_enough_space_error="Not enough free space on the local drive for this VM.",
+            overwrite_title="Overwrite Local VM",
+            overwrite_message=f"Overwrite the existing local VM?\n\n{local_vm}",
+            start_message=f"Copy {selection.source_vm.name} from remote to local folder.",
+            overwrite_message_log=f"Overwrite local VM {local_vm.name} with the remote copy.",
+            completed_label="Copy to local completed",
         )
-
-    def keep_local_copy(self) -> None:
-        self._append_log("About to: refresh both VM lists.")
-        self.refresh_vm_lists()
-        self.progress_bar.setValue(100)
-        self.status_label.setText("VM lists refreshed.")
-        self._append_log("VM lists refreshed.")
 
     def delete_selected_vm(self) -> None:
         remote_vm = self._selected_vm_path(self.source_vm_list)
@@ -303,52 +285,27 @@ class VmHandyWindow(QMainWindow):
         source_folder = self._folder_path(self.source_folder_input)
         local_folder = self._folder_path(self.local_folder_input)
         if remote_vm is not None:
-            if source_folder is None or not remote_vm.exists():
-                self._show_error("There is no remote VM to delete.")
-                return
-            if not can_write_to_folder(source_folder):
-                self._show_error(f"No write permission for remote destination: {source_folder}")
-                return
-
-            confirmed = QMessageBox.question(
-                self,
-                "Delete Remote VM",
-                f"Delete remote VM?\n\n{remote_vm}",
-            )
-            if confirmed != QMessageBox.StandardButton.Yes:
-                return
-
-            self._append_log(f"About to: delete remote VM {remote_vm.name}.")
-            self._run_action(
-                PendingAction(
-                    label="Delete remote VM completed",
-                    runner=lambda: remove_tree(remote_vm),
-                )
+            self._start_delete_action(
+                target_vm=remote_vm,
+                target_folder=source_folder,
+                missing_error="There is no remote VM to delete.",
+                permission_error=f"No write permission for remote destination: {source_folder}",
+                confirm_title="Delete Remote VM",
+                confirm_message=f"Delete remote VM?\n\n{remote_vm}",
+                action_text=f"delete remote VM {remote_vm.name}",
+                completed_label="Delete remote VM completed",
             )
             return
 
-        if local_vm is None or local_folder is None or not local_vm.exists():
-            self._show_error("There is no local VM copy to delete.")
-            return
-        if not can_write_to_folder(local_folder):
-            self._show_error(f"No write permission for local destination: {local_folder}")
-            return
-
-        confirmed = QMessageBox.question(
-            self,
-            "Delete Local Copy",
-            f"Delete local VM copy?\n\n{local_vm}",
-        )
-        if confirmed != QMessageBox.StandardButton.Yes:
-            return
-
-        self._append_log(f"About to: delete local VM {local_vm.name}.")
-
-        self._run_action(
-            PendingAction(
-                label="Delete local copy completed",
-                runner=lambda: remove_tree(local_vm),
-            )
+        self._start_delete_action(
+            target_vm=local_vm,
+            target_folder=local_folder,
+            missing_error="There is no local VM copy to delete.",
+            permission_error=f"No write permission for local destination: {local_folder}",
+            confirm_title="Delete Local Copy",
+            confirm_message=f"Delete local VM copy?\n\n{local_vm}",
+            action_text=f"delete local VM {local_vm.name}" if local_vm is not None else "delete local VM",
+            completed_label="Delete local copy completed",
         )
 
     def copy_to_remote(self) -> None:
@@ -365,40 +322,17 @@ class VmHandyWindow(QMainWindow):
             return
 
         destination_vm = source_folder / local_vm.name
-
-        vm_size = compute_total_size(local_vm)
-        free_space = available_bytes(source_folder)
-        if destination_vm.exists():
-            free_space += compute_total_size(destination_vm)
-        if vm_size > free_space:
-            self._show_error("Not enough free space on the remote drive to replace the VM.")
-            return
-
-        overwrite = False
-        action_text = f"Copy local VM {local_vm.name} to remote folder."
-        if destination_vm.exists():
-            confirmed = QMessageBox.question(
-                self,
-                "Overwrite Remote VM",
-                f"Overwrite the existing remote VM?\n\n{destination_vm}",
-            )
-            if confirmed != QMessageBox.StandardButton.Yes:
-                return
-            overwrite = True
-            action_text = f"Overwrite remote VM {destination_vm.name} with the local copy."
-
-        self._append_log(f"About to: {action_text}")
-
-        self._run_action(
-            PendingAction(
-                label="Copy VM to remote completed",
-                runner=lambda: copy_tree_with_progress(
-                    local_vm,
-                    destination_vm,
-                    self._progress_callback,
-                    overwrite=overwrite,
-                ),
-            )
+        self._start_copy_action(
+            source=local_vm,
+            destination=destination_vm,
+            destination_folder=source_folder,
+            permission_error=f"No write permission for remote destination: {source_folder}",
+            not_enough_space_error="Not enough free space on the remote drive to replace the VM.",
+            overwrite_title="Overwrite Remote VM",
+            overwrite_message=f"Overwrite the existing remote VM?\n\n{destination_vm}",
+            start_message=f"Copy local VM {local_vm.name} to remote folder.",
+            overwrite_message_log=f"Overwrite remote VM {destination_vm.name} with the local copy.",
+            completed_label="Copy VM to remote completed",
         )
 
     def _guard_selection(self) -> VmSelection | None:
@@ -407,6 +341,96 @@ class VmHandyWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             self._show_error(str(exc))
             return None
+
+    def _start_copy_action(
+        self,
+        *,
+        source: Path,
+        destination: Path,
+        destination_folder: Path,
+        permission_error: str,
+        not_enough_space_error: str,
+        overwrite_title: str,
+        overwrite_message: str,
+        start_message: str,
+        overwrite_message_log: str,
+        completed_label: str,
+    ) -> None:
+        if not can_write_to_folder(destination_folder):
+            self._show_error(permission_error)
+            return
+
+        if not self._has_enough_space(source, destination, destination_folder):
+            self._show_error(not_enough_space_error)
+            return
+
+        overwrite = self._confirm_overwrite(
+            destination=destination,
+            title=overwrite_title,
+            message=overwrite_message,
+        )
+        if overwrite is None:
+            return
+
+        action_text = overwrite_message_log if overwrite else start_message
+        self._append_log(f"About to: {action_text}")
+        self._run_action(
+            PendingAction(
+                label=completed_label,
+                runner=lambda: copy_tree_with_progress(
+                    source,
+                    destination,
+                    self._progress_callback,
+                    overwrite=overwrite,
+                ),
+            )
+        )
+
+    def _start_delete_action(
+        self,
+        *,
+        target_vm: Path | None,
+        target_folder: Path | None,
+        missing_error: str,
+        permission_error: str,
+        confirm_title: str,
+        confirm_message: str,
+        action_text: str,
+        completed_label: str,
+    ) -> None:
+        if target_vm is None or target_folder is None or not target_vm.exists():
+            self._show_error(missing_error)
+            return
+        if not can_write_to_folder(target_folder):
+            self._show_error(permission_error)
+            return
+
+        confirmed = QMessageBox.question(self, confirm_title, confirm_message)
+        if confirmed != QMessageBox.StandardButton.Yes:
+            return
+
+        self._append_log(f"About to: {action_text}.")
+        self._run_action(
+            PendingAction(
+                label=completed_label,
+                runner=lambda: remove_tree(target_vm),
+            )
+        )
+
+    def _has_enough_space(self, source: Path, destination: Path, destination_folder: Path) -> bool:
+        required_bytes = compute_total_size(source)
+        free_space = available_bytes(destination_folder)
+        if destination.exists():
+            free_space += compute_total_size(destination)
+        return required_bytes <= free_space
+
+    def _confirm_overwrite(self, *, destination: Path, title: str, message: str) -> bool | None:
+        if not destination.exists():
+            return False
+        confirmed = QMessageBox.question(self, title, message)
+        if confirmed != QMessageBox.StandardButton.Yes:
+            return None
+        return True
 
     def _run_action(self, action: PendingAction) -> None:
         if self._thread is not None and self._thread.isRunning():
@@ -466,6 +490,17 @@ class VmHandyWindow(QMainWindow):
     def _append_log(self, message: str) -> None:
         self.log_output.appendPlainText(message)
 
+    def _format_bytes(self, size: int) -> str:
+        units = ["B", "KB", "MB", "GB", "TB"]
+        value = float(size)
+        for unit in units:
+            if value < 1024 or unit == units[-1]:
+                if unit == "B":
+                    return f"{int(value)} {unit}"
+                return f"{value:.1f} {unit}"
+            value /= 1024
+        return f"{size} B"
+
     def _update_action_states(self) -> None:
         source_folder = self._folder_path(self.source_folder_input)
         local_folder = self._folder_path(self.local_folder_input)
@@ -496,9 +531,9 @@ class VmHandyWindow(QMainWindow):
         )
 
         self.copy_button.setEnabled(copy_enabled)
-        self.keep_button.setEnabled(keep_enabled)
         self.delete_button.setEnabled(delete_enabled)
         self.replace_button.setEnabled(replace_enabled)
+        self.refresh_button.setEnabled(keep_enabled)
         if source_selected:
             self.delete_button.setText("Delete Remote VM")
         elif local_selected:
@@ -507,36 +542,56 @@ class VmHandyWindow(QMainWindow):
             self.delete_button.setText("Delete")
 
     def _on_source_folder_changed(self) -> None:
-        self.settings["source_folder"] = self.source_folder_input.text().strip()
-        self.settings["source_vm_name"] = ""
-        self._write_settings()
-        self.refresh_vm_lists()
+        self._handle_folder_change(
+            field=self.source_folder_input,
+            folder_key="source_folder",
+            selection_key="source_vm_name",
+        )
 
     def _on_local_folder_changed(self) -> None:
-        self.settings["local_folder"] = self.local_folder_input.text().strip()
-        self.settings["local_vm_name"] = ""
+        self._handle_folder_change(
+            field=self.local_folder_input,
+            folder_key="local_folder",
+            selection_key="local_vm_name",
+        )
+
+    def _on_source_selection_changed(self) -> None:
+        self._handle_selection_change(
+            selected_widget=self.source_vm_list,
+            cleared_widget=self.local_vm_list,
+            selected_key="source_vm_name",
+            cleared_key="local_vm_name",
+        )
+
+    def _on_local_selection_changed(self) -> None:
+        self._handle_selection_change(
+            selected_widget=self.local_vm_list,
+            cleared_widget=self.source_vm_list,
+            selected_key="local_vm_name",
+            cleared_key="source_vm_name",
+        )
+
+    def _handle_folder_change(self, *, field: QLineEdit, folder_key: str, selection_key: str) -> None:
+        self.settings[folder_key] = field.text().strip()
+        self.settings[selection_key] = ""
         self._write_settings()
         self.refresh_vm_lists()
 
-    def _on_source_selection_changed(self) -> None:
-        selected_name = self._selected_vm_name(self.source_vm_list) or ""
+    def _handle_selection_change(
+        self,
+        *,
+        selected_widget: QListWidget,
+        cleared_widget: QListWidget,
+        selected_key: str,
+        cleared_key: str,
+    ) -> None:
+        selected_name = self._selected_vm_name(selected_widget) or ""
         if selected_name:
-            self.local_vm_list.blockSignals(True)
-            self.local_vm_list.clearSelection()
-            self.local_vm_list.blockSignals(False)
-            self.settings["local_vm_name"] = ""
-        self.settings["source_vm_name"] = selected_name
-        self._write_settings()
-        self._update_action_states()
-
-    def _on_local_selection_changed(self) -> None:
-        selected_name = self._selected_vm_name(self.local_vm_list) or ""
-        if selected_name:
-            self.source_vm_list.blockSignals(True)
-            self.source_vm_list.clearSelection()
-            self.source_vm_list.blockSignals(False)
-            self.settings["source_vm_name"] = ""
-        self.settings["local_vm_name"] = selected_name
+            cleared_widget.blockSignals(True)
+            cleared_widget.clearSelection()
+            cleared_widget.blockSignals(False)
+            self.settings[cleared_key] = ""
+        self.settings[selected_key] = selected_name
         self._write_settings()
         self._update_action_states()
 
