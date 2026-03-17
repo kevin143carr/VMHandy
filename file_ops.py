@@ -11,6 +11,10 @@ from pathlib import Path
 CHUNK_SIZE = 8 * 1024 * 1024
 
 
+class CopyCancelledError(RuntimeError):
+    pass
+
+
 @dataclass(slots=True)
 class VmSelection:
     source_vm: Path
@@ -69,21 +73,50 @@ def _backup_path_for(path: Path) -> Path:
     return candidate
 
 
-def _copy_tree_with_progress_macos(source: Path, destination: Path, on_progress) -> None:
-    on_progress(0, 1, source.name)
-    result = subprocess.run(
-        ["ditto", str(source), str(destination)],
+def _mark_as_bundle_macos(path: Path) -> None:
+    attr_name = "com.apple.FinderInfo"
+    read_result = subprocess.run(
+        ["xattr", "-px", attr_name, str(path)],
         check=False,
         capture_output=True,
         text=True,
     )
-    if result.returncode != 0:
-        message = result.stderr.strip() or result.stdout.strip() or "ditto failed"
-        raise OSError(f"Unable to copy VM bundle with macOS metadata preserved: {message}")
-    on_progress(1, 1, source.name)
+    if read_result.returncode == 0:
+        hex_str = "".join(read_result.stdout.split())
+    else:
+        hex_str = "0" * 64
+
+    data = bytearray.fromhex(hex_str.ljust(64, "0"))
+    data[8] |= 0x20
+
+    write_result = subprocess.run(
+        ["xattr", "-wx", attr_name, data.hex(), str(path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if write_result.returncode != 0:
+        message = write_result.stderr.strip() or write_result.stdout.strip() or "xattr -wx failed"
+        raise OSError(f"Unable to mark VM bundle as a macOS bundle: {message}")
+
+    touch_result = subprocess.run(
+        ["touch", str(path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if touch_result.returncode != 0:
+        message = touch_result.stderr.strip() or touch_result.stdout.strip() or "touch failed"
+        raise OSError(f"Unable to refresh the VM bundle in Finder: {message}")
 
 
-def copy_tree_with_progress(source: Path, destination: Path, on_progress, overwrite: bool = False) -> None:
+def copy_tree_with_progress(
+    source: Path,
+    destination: Path,
+    on_progress,
+    overwrite: bool = False,
+    should_cancel=lambda: False,
+) -> None:
     ensure_pvm(source)
     if destination.exists() and not overwrite:
         raise FileExistsError(f"Destination already exists: {destination}")
@@ -97,15 +130,15 @@ def copy_tree_with_progress(source: Path, destination: Path, on_progress, overwr
     copied_bytes = 0
 
     try:
-        if sys.platform == "darwin":
-            _copy_tree_with_progress_macos(source, destination, on_progress)
-            return
-
         for directory in [source, *[p for p in source.rglob("*") if p.is_dir()]]:
+            if should_cancel():
+                raise CopyCancelledError("Copy cancelled.")
             relative_dir = directory.relative_to(source)
             (destination / relative_dir).mkdir(parents=True, exist_ok=True)
 
         for item in source.rglob("*"):
+            if should_cancel():
+                raise CopyCancelledError("Copy cancelled.")
             relative_path = item.relative_to(source)
             destination_path = destination / relative_path
             if item.is_dir():
@@ -114,9 +147,19 @@ def copy_tree_with_progress(source: Path, destination: Path, on_progress, overwr
 
             with item.open("rb") as src_handle, destination_path.open("wb") as dst_handle:
                 while chunk := src_handle.read(CHUNK_SIZE):
+                    if should_cancel():
+                        raise CopyCancelledError("Copy cancelled.")
                     dst_handle.write(chunk)
                     copied_bytes += len(chunk)
                     on_progress(copied_bytes, total_bytes, str(relative_path))
+            shutil.copystat(item, destination_path, follow_symlinks=False)
+        for directory in [*source.rglob("*"), source]:
+            if not directory.is_dir():
+                continue
+            destination_path = destination / directory.relative_to(source) if directory != source else destination
+            shutil.copystat(directory, destination_path, follow_symlinks=False)
+        if sys.platform == "darwin":
+            _mark_as_bundle_macos(destination)
     except Exception:
         if destination.exists():
             remove_tree(destination)

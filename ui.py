@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from file_ops import (
+    CopyCancelledError,
     VmSelection,
     available_bytes,
     can_write_to_folder,
@@ -40,11 +42,14 @@ from file_ops import (
 class PendingAction:
     label: str
     runner: Callable[[], None]
+    cancel: Callable[[], None] | None = None
+    is_copy: bool = False
 
 
 class Worker(QObject):
     progress = Signal(object, object, str)
     finished = Signal(str)
+    cancelled = Signal(str)
     failed = Signal(str)
 
     def __init__(self, action: PendingAction) -> None:
@@ -54,6 +59,9 @@ class Worker(QObject):
     def run(self) -> None:
         try:
             self._action.runner()
+        except CopyCancelledError as exc:
+            self.cancelled.emit(str(exc) or "Copy cancelled.")
+            return
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc))
             return
@@ -70,6 +78,10 @@ class VmHandyWindow(QMainWindow):
         self.settings = self._load_settings()
         self._thread: QThread | None = None
         self._worker: Worker | None = None
+        self._cancel_current_action: Callable[[], None] | None = None
+        self._copy_in_progress = False
+        self._cancellation_requested = False
+        self._close_requested = False
 
         self.source_folder_input = QLineEdit()
         self.source_folder_input.setPlaceholderText("Choose the remote VM folder")
@@ -100,7 +112,7 @@ class VmHandyWindow(QMainWindow):
         self.copy_button.clicked.connect(self.copy_to_local)
         self.delete_button.clicked.connect(self.delete_selected_vm)
         self.replace_button.clicked.connect(self.copy_to_remote)
-        self.refresh_button.clicked.connect(self.refresh_vm_lists)
+        self.refresh_button.clicked.connect(self.refresh_or_cancel)
         self.source_vm_list.itemSelectionChanged.connect(self._on_source_selection_changed)
         self.local_vm_list.itemSelectionChanged.connect(self._on_local_selection_changed)
         self.source_folder_input.editingFinished.connect(self._on_source_folder_changed)
@@ -174,6 +186,12 @@ class VmHandyWindow(QMainWindow):
         if selected:
             self.local_folder_input.setText(selected)
             self._on_local_folder_changed()
+
+    def refresh_or_cancel(self) -> None:
+        if self._copy_in_progress:
+            self.cancel_current_action()
+            return
+        self.refresh_vm_lists()
 
     def refresh_vm_lists(self) -> None:
         source_folder = self._folder_path(self.source_folder_input)
@@ -373,6 +391,7 @@ class VmHandyWindow(QMainWindow):
             return
 
         action_text = overwrite_message_log if overwrite else start_message
+        cancel_event = threading.Event()
         self._append_log(f"About to: {action_text}")
         self._run_action(
             PendingAction(
@@ -382,7 +401,10 @@ class VmHandyWindow(QMainWindow):
                     destination,
                     self._progress_callback,
                     overwrite=overwrite,
+                    should_cancel=cancel_event.is_set,
                 ),
+                cancel=cancel_event.set,
+                is_copy=True,
             )
         )
 
@@ -432,13 +454,26 @@ class VmHandyWindow(QMainWindow):
             return None
         return True
 
+    def cancel_current_action(self) -> None:
+        if self._cancel_current_action is None or self._cancellation_requested:
+            return
+        self._cancellation_requested = True
+        self._append_log("Cancellation requested.")
+        self.status_label.setText("Cancelling...")
+        self._cancel_current_action()
+        self._update_action_states()
+
     def _run_action(self, action: PendingAction) -> None:
         if self._thread is not None and self._thread.isRunning():
             self._show_error("Another action is already running.")
             return
 
+        self._cancel_current_action = action.cancel
+        self._copy_in_progress = action.is_copy
+        self._cancellation_requested = False
         self.progress_bar.setValue(0)
         self.status_label.setText("Working...")
+        self._update_action_states()
         self._append_log(action.label.replace(" completed", " started"))
 
         self._thread = QThread(self)
@@ -448,8 +483,10 @@ class VmHandyWindow(QMainWindow):
         self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_finished)
+        self._worker.cancelled.connect(self._on_cancelled)
         self._worker.failed.connect(self._on_failed)
         self._worker.finished.connect(self._thread.quit)
+        self._worker.cancelled.connect(self._thread.quit)
         self._worker.failed.connect(self._thread.quit)
         self._thread.finished.connect(self._cleanup_thread)
         self._thread.finished.connect(self.refresh_vm_lists)
@@ -471,6 +508,11 @@ class VmHandyWindow(QMainWindow):
         self.status_label.setText(label)
         self._append_log(label)
 
+    def _on_cancelled(self, message: str) -> None:
+        self.progress_bar.setValue(0)
+        self.status_label.setText(message)
+        self._append_log(message)
+
     def _on_failed(self, message: str) -> None:
         self.status_label.setText("Action failed")
         self._append_log(f"Error: {message}")
@@ -481,14 +523,26 @@ class VmHandyWindow(QMainWindow):
             self._worker.deleteLater()
         if self._thread is not None:
             self._thread.deleteLater()
+        self._cancel_current_action = None
+        self._copy_in_progress = False
+        self._cancellation_requested = False
         self._worker = None
         self._thread = None
+        self._update_action_states()
+        if self._close_requested:
+            self.close()
 
     def _show_error(self, message: str) -> None:
         QMessageBox.critical(self, "VMHandy", message)
 
     def _append_log(self, message: str) -> None:
         self.log_output.appendPlainText(message)
+
+    def _sync_refresh_button(self) -> None:
+        if self._copy_in_progress:
+            self.refresh_button.setText("Cancel")
+            return
+        self.refresh_button.setText("Refresh Lists")
 
     def _format_bytes(self, size: int) -> str:
         units = ["B", "KB", "MB", "GB", "TB"]
@@ -508,8 +562,12 @@ class VmHandyWindow(QMainWindow):
         local_vm = self._selected_vm_path(self.local_vm_list)
         source_selected = bool(self.source_vm_list.selectedItems())
         local_selected = bool(self.local_vm_list.selectedItems())
+        action_running = self._thread is not None and self._thread.isRunning()
+        cancellation_pending = self._cancellation_requested
 
         copy_enabled = (
+            not action_running
+            and
             source_selected
             and source_folder is not None
             and local_folder is not None
@@ -519,21 +577,28 @@ class VmHandyWindow(QMainWindow):
         )
         keep_enabled = True
         delete_enabled = (
-            (source_selected and source_folder is not None and can_write_to_folder(source_folder))
-            or (local_selected and local_folder is not None and can_write_to_folder(local_folder))
+            not action_running
+            and (
+                (source_selected and source_folder is not None and can_write_to_folder(source_folder))
+                or (local_selected and local_folder is not None and can_write_to_folder(local_folder))
+            )
         )
         replace_enabled = (
+            not action_running
+            and
             local_selected
             and local_vm is not None
             and source_folder is not None
             and source_folder.exists()
             and can_write_to_folder(source_folder)
         )
+        refresh_enabled = (self._copy_in_progress and not cancellation_pending) or not action_running
 
         self.copy_button.setEnabled(copy_enabled)
         self.delete_button.setEnabled(delete_enabled)
         self.replace_button.setEnabled(replace_enabled)
-        self.refresh_button.setEnabled(keep_enabled)
+        self.refresh_button.setEnabled(refresh_enabled and keep_enabled)
+        self._sync_refresh_button()
         if source_selected:
             self.delete_button.setText("Delete Remote VM")
         elif local_selected:
@@ -601,11 +666,18 @@ class VmHandyWindow(QMainWindow):
         self.refresh_vm_lists()
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        if self._thread is not None and self._thread.isRunning():
+            self._close_requested = True
+            self.cancel_current_action()
+            event.ignore()
+            return
+
         self.settings["source_folder"] = self.source_folder_input.text().strip()
         self.settings["local_folder"] = self.local_folder_input.text().strip()
         self.settings["source_vm_name"] = self._selected_vm_name(self.source_vm_list) or ""
         self.settings["local_vm_name"] = self._selected_vm_name(self.local_vm_list) or ""
         self._write_settings()
+        self._close_requested = False
         super().closeEvent(event)
 
     def _load_settings(self) -> dict[str, str]:
