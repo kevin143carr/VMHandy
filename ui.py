@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QObject, QThread, Qt, Signal
+from PySide6.QtCore import QObject, QThread, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QFileDialog,
     QGridLayout,
@@ -552,7 +552,7 @@ class VmHandyWindow(QMainWindow):
             title=title,
             message=message,
             buttons=QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            default_button=QMessageBox.StandardButton.No,
+            default_button=QMessageBox.StandardButton.No
         )
 
     def _show_message_box(
@@ -565,13 +565,15 @@ class VmHandyWindow(QMainWindow):
         default_button: QMessageBox.StandardButton | None = None,
     ) -> QMessageBox.StandardButton:
         message_box = QMessageBox(self)
+        message_box.setWindowFlag(Qt.WindowType.Sheet, False)
+        message_box.setWindowModality(Qt.WindowModality.WindowModal)
         message_box.setIcon(icon)
         message_box.setWindowTitle(title)
         message_box.setText(message)
         message_box.setStandardButtons(buttons)
         if default_button is not None:
             message_box.setDefaultButton(default_button)
-        self._center_dialog(message_box)
+        QTimer.singleShot(0, lambda: self._center_dialog(message_box))
         return QMessageBox.StandardButton(message_box.exec())
 
     def _center_dialog(self, dialog: QMessageBox) -> None:
