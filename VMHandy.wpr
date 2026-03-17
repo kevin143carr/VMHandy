@@ -1,0 +1,17 @@
+#!wing
+#!version=11.0
+##################################################################
+# Wing project file                                              #
+##################################################################
+[project attributes]
+proj.directory-list = [{'dirloc': loc('.'),
+                        'excludes': (),
+                        'filter': '*',
+                        'include_hidden': False,
+                        'recursive': True,
+                        'watch_for_changes': True}]
+proj.file-type = 'shared'
+proj.launch-config = {loc('main.py'): ('project',
+                                       ('',
+        'launch-x0h3yGu8p1XdLRq4'))}
+proj.main-file = loc('main.py')
