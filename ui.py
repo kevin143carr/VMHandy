@@ -427,7 +427,7 @@ class VmHandyWindow(QMainWindow):
             self._show_error(permission_error)
             return
 
-        confirmed = QMessageBox.question(self, confirm_title, confirm_message)
+        confirmed = self._show_confirmation(title=confirm_title, message=confirm_message)
         if confirmed != QMessageBox.StandardButton.Yes:
             return
 
@@ -449,7 +449,13 @@ class VmHandyWindow(QMainWindow):
     def _confirm_overwrite(self, *, destination: Path, title: str, message: str) -> bool | None:
         if not destination.exists():
             return False
-        confirmed = QMessageBox.question(self, title, message)
+        confirmed = self._show_message_box(
+            icon=QMessageBox.Icon.Question,
+            title=title,
+            message=message,
+            buttons=QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            default_button=QMessageBox.StandardButton.No,
+        )
         if confirmed != QMessageBox.StandardButton.Yes:
             return None
         return True
@@ -533,7 +539,46 @@ class VmHandyWindow(QMainWindow):
             self.close()
 
     def _show_error(self, message: str) -> None:
-        QMessageBox.critical(self, "VMHandy", message)
+        self._show_message_box(
+            icon=QMessageBox.Icon.Critical,
+            title="VMHandy",
+            message=message,
+            buttons=QMessageBox.StandardButton.Ok,
+        )
+
+    def _show_confirmation(self, *, title: str, message: str) -> QMessageBox.StandardButton:
+        return self._show_message_box(
+            icon=QMessageBox.Icon.Question,
+            title=title,
+            message=message,
+            buttons=QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            default_button=QMessageBox.StandardButton.No,
+        )
+
+    def _show_message_box(
+        self,
+        *,
+        icon: QMessageBox.Icon,
+        title: str,
+        message: str,
+        buttons: QMessageBox.StandardButton,
+        default_button: QMessageBox.StandardButton | None = None,
+    ) -> QMessageBox.StandardButton:
+        message_box = QMessageBox(self)
+        message_box.setIcon(icon)
+        message_box.setWindowTitle(title)
+        message_box.setText(message)
+        message_box.setStandardButtons(buttons)
+        if default_button is not None:
+            message_box.setDefaultButton(default_button)
+        self._center_dialog(message_box)
+        return QMessageBox.StandardButton(message_box.exec())
+
+    def _center_dialog(self, dialog: QMessageBox) -> None:
+        dialog.adjustSize()
+        dialog_rect = dialog.frameGeometry()
+        dialog_rect.moveCenter(self.frameGeometry().center())
+        dialog.move(dialog_rect.topLeft())
 
     def _append_log(self, message: str) -> None:
         self.log_output.appendPlainText(message)
