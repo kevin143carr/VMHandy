@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QObject, QThread, Qt, QTimer, Signal
+from PySide6.QtCore import QObject, QSettings, QThread, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -79,12 +79,23 @@ class Worker(QObject):
 
 
 class VmHandyWindow(QMainWindow):
+    ORGANIZATION_NAME = "KevinCarr"
+    APPLICATION_NAME = "VMHandy"
+    SETTINGS_DEFAULTS = {
+        "provider": "",
+        "source_folder": "",
+        "local_folder": "",
+        "source_vm_name": "",
+        "local_vm_name": "",
+        "registered_vm_id": "",
+    }
+
     def __init__(self) -> None:
         super().__init__()
         self.resize(1180, 680)
 
-        self.settings_path = Path(__file__).resolve().parent / "vmhandy.ini"
-        self.settings = self._load_settings()
+        self.settings = QSettings(self.ORGANIZATION_NAME, self.APPLICATION_NAME)
+        self._migrate_legacy_settings()
         self._registered_vms: list[RegisteredVm] = []
         self._thread: QThread | None = None
         self._worker: Worker | None = None
@@ -209,7 +220,7 @@ class VmHandyWindow(QMainWindow):
         return group
 
     def _populate_provider_combo(self) -> None:
-        selected = self.settings.get("provider", default_provider_name())
+        selected = self._setting("provider", default_provider_name())
         for name in available_provider_names():
             provider = get_provider(name)
             label = provider_label(name)
@@ -257,16 +268,16 @@ class VmHandyWindow(QMainWindow):
         self._populate_bundle_list(
             self.source_vm_list,
             source_folder,
-            self.settings.get("source_vm_name", ""),
+            self._setting("source_vm_name"),
         )
         self._populate_bundle_list(
             self.local_vm_list,
             local_folder,
-            self.settings.get("local_vm_name", ""),
+            self._setting("local_vm_name"),
         )
         self._populate_registered_vm_list(
             provider,
-            self.settings.get("registered_vm_id", ""),
+            self._setting("registered_vm_id"),
         )
         self._update_action_states()
 
@@ -953,9 +964,8 @@ class VmHandyWindow(QMainWindow):
         )
 
     def _on_provider_changed(self) -> None:
-        self.settings["provider"] = self.current_provider_name()
-        self.settings["registered_vm_id"] = ""
-        self._write_settings()
+        self._set_setting("provider", self.current_provider_name())
+        self._set_setting("registered_vm_id", "")
         self._update_window_title()
         self.refresh_vm_lists()
 
@@ -985,9 +995,8 @@ class VmHandyWindow(QMainWindow):
         )
 
     def _handle_folder_change(self, *, field: QLineEdit, folder_key: str, selection_key: str) -> None:
-        self.settings[folder_key] = field.text().strip()
-        self.settings[selection_key] = ""
-        self._write_settings()
+        self._set_setting(folder_key, field.text().strip())
+        self._set_setting(selection_key, "")
         self.refresh_vm_lists()
 
     def _handle_selection_change(
@@ -1008,15 +1017,14 @@ class VmHandyWindow(QMainWindow):
                 widget.clearSelection()
                 widget.blockSignals(False)
             for key in cleared_keys:
-                self.settings[key] = ""
-        self.settings[selected_key] = selected_value
-        self._write_settings()
+                self._set_setting(key, "")
+        self._set_setting(selected_key, selected_value)
         self._update_action_states()
 
     def _restore_settings(self) -> None:
-        self.source_folder_input.setText(self.settings.get("source_folder", ""))
-        self.local_folder_input.setText(self.settings.get("local_folder", ""))
-        provider = self.settings.get("provider", default_provider_name())
+        self.source_folder_input.setText(self._setting("source_folder"))
+        self.local_folder_input.setText(self._setting("local_folder"))
+        provider = self._setting("provider", default_provider_name())
         index = self.provider_combo.findData(provider)
         self.provider_combo.setCurrentIndex(index if index >= 0 else 0)
         self.refresh_vm_lists()
@@ -1028,29 +1036,35 @@ class VmHandyWindow(QMainWindow):
             event.ignore()
             return
 
-        self.settings["provider"] = self.current_provider_name()
-        self.settings["source_folder"] = self.source_folder_input.text().strip()
-        self.settings["local_folder"] = self.local_folder_input.text().strip()
-        self.settings["source_vm_name"] = self._selected_vm_name(self.source_vm_list) or ""
-        self.settings["local_vm_name"] = self._selected_vm_name(self.local_vm_list) or ""
-        self.settings["registered_vm_id"] = self._selected_registered_vm_id() or ""
-        self._write_settings()
+        self._set_setting("provider", self.current_provider_name())
+        self._set_setting("source_folder", self.source_folder_input.text().strip())
+        self._set_setting("local_folder", self.local_folder_input.text().strip())
+        self._set_setting("source_vm_name", self._selected_vm_name(self.source_vm_list) or "")
+        self._set_setting("local_vm_name", self._selected_vm_name(self.local_vm_list) or "")
+        self._set_setting("registered_vm_id", self._selected_registered_vm_id() or "")
         self._close_requested = False
         super().closeEvent(event)
 
-    def _load_settings(self) -> dict[str, str]:
-        settings = {
-            "provider": default_provider_name(),
-            "source_folder": "",
-            "local_folder": "",
-            "source_vm_name": "",
-            "local_vm_name": "",
-            "registered_vm_id": "",
-        }
-        if not self.settings_path.exists():
-            return settings
+    def _setting(self, key: str, default: str = "") -> str:
+        value = self.settings.value(key, default)
+        if value is None:
+            return default
+        return str(value)
 
-        for line in self.settings_path.read_text(encoding="utf-8").splitlines():
+    def _set_setting(self, key: str, value: str) -> None:
+        self.settings.setValue(key, value)
+        self.settings.sync()
+
+    def _has_saved_settings(self) -> bool:
+        return any(self.settings.contains(key) for key in self.SETTINGS_DEFAULTS)
+
+    def _migrate_legacy_settings(self) -> None:
+        legacy_path = Path(__file__).resolve().parent / "vmhandy.ini"
+        if self._has_saved_settings() or not legacy_path.exists():
+            return
+
+        migrated = False
+        for line in legacy_path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line or line.startswith("#") or line.startswith(";"):
                 continue
@@ -1058,19 +1072,10 @@ class VmHandyWindow(QMainWindow):
                 continue
             key, value = line.split("=", 1)
             key = key.strip()
-            if key in settings:
-                settings[key] = value.strip()
-        return settings
+            if key not in self.SETTINGS_DEFAULTS:
+                continue
+            self.settings.setValue(key, value.strip())
+            migrated = True
 
-    def _write_settings(self) -> None:
-        lines = [
-            "[vmhandy]",
-            f"provider={self.settings.get('provider', default_provider_name())}",
-            f"source_folder={self.settings.get('source_folder', '')}",
-            f"local_folder={self.settings.get('local_folder', '')}",
-            f"source_vm_name={self.settings.get('source_vm_name', '')}",
-            f"local_vm_name={self.settings.get('local_vm_name', '')}",
-            f"registered_vm_id={self.settings.get('registered_vm_id', '')}",
-            "",
-        ]
-        self.settings_path.write_text("\n".join(lines), encoding="utf-8")
+        if migrated:
+            self.settings.sync()

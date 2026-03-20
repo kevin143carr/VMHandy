@@ -14,7 +14,7 @@ VMHandy is a macOS desktop utility for managing virtual machine bundles between 
 - Register a local VM with the selected provider.
 - Unregister a registered VM from the selected provider.
 - Cancel an in-progress copy operation.
-- Persist the selected provider, folders, and current selections in `vmhandy.ini`.
+- Persist the selected provider, folders, and current selections using Qt user settings on macOS.
 
 ## Provider Support
 
