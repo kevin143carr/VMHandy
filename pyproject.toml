@@ -1,6 +1,6 @@
 [project]
 name = "vmhandy"
-version = "0.9.0b3"
+version = "0.9.0b4"
 description = "Desktop utility for moving Parallels VMs between USB and internal storage."
 readme = "README.md"
 requires-python = ">=3.12"
