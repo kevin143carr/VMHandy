@@ -48,9 +48,15 @@ jobs:
           enable-plugins: pyside6
           macos-app-name: VMHandy
 
+      - name: Rename app bundle
+        run: |
+          if [ -d build/main.app ]; then
+            mv build/main.app build/VMHandy.app
+          fi
+
       - name: Upload macOS app artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: build/*.app
+          path: build/VMHandy.app
           include-hidden-files: true
