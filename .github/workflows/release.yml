@@ -45,6 +45,7 @@ jobs:
           script-name: main.py
           mode: app
           enable-plugins: pyside6
+          output-filename: VMHandy
 
       - name: Archive app bundle
         run: |

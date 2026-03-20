@@ -46,6 +46,7 @@ jobs:
           script-name: main.py
           mode: app
           enable-plugins: pyside6
+          output-filename: VMHandy
 
       - name: Upload macOS app artifact
         uses: actions/upload-artifact@v4
