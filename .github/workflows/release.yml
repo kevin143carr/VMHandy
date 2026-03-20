@@ -10,7 +10,15 @@ permissions:
 
 jobs:
   build-and-upload-macos-app:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-13
+            asset_suffix: intel
+          - runner: macos-15
+            asset_suffix: arm64
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - name: Check out repository
@@ -20,7 +28,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          architecture: x64
           cache: pip
           cache-dependency-path: |
             pyproject.toml
@@ -47,7 +54,7 @@ jobs:
             exit 1
           fi
 
-          zip_name="VMHandy-macOS-${{ github.event.release.tag_name }}.zip"
+          zip_name="VMHandy-macOS-${{ matrix.asset_suffix }}-${{ github.event.release.tag_name }}.zip"
           ditto -c -k --sequesterRsrc --keepParent "$app_path" "$zip_name"
 
       - name: Upload release asset
@@ -55,5 +62,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release upload "${{ github.event.release.tag_name }}" \
-            "VMHandy-macOS-${{ github.event.release.tag_name }}.zip" \
+            "VMHandy-macOS-${{ matrix.asset_suffix }}-${{ github.event.release.tag_name }}.zip" \
             --clobber
