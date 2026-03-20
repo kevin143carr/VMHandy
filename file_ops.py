@@ -22,6 +22,16 @@ BUNDLE_SUFFIXES = {
     PROVIDER_VMWARE_FUSION: ".vmwarevm",
 }
 VMWARE_FUSION_INVENTORY_PATH = Path("~/Library/Application Support/VMware Fusion/vmInventory").expanduser()
+COMMON_MACOS_BIN_DIRS = (
+    Path("/opt/homebrew/bin"),
+    Path("/usr/local/bin"),
+    Path("/usr/bin"),
+    Path("/bin"),
+)
+CONFIGURED_EXECUTABLES: dict[str, str] = {
+    PROVIDER_PARALLELS: "",
+    PROVIDER_VMWARE_FUSION: "",
+}
 
 
 class CopyCancelledError(RuntimeError):
@@ -79,7 +89,7 @@ class ParallelsProvider(VmProvider):
     supports_unregistration = True
 
     def is_available(self) -> bool:
-        return shutil.which("prlctl") is not None
+        return _parallels_cli_path() is not None
 
     def list_registered_vms(self) -> list[RegisteredVm]:
         if not self.is_available():
@@ -102,7 +112,7 @@ class VmwareFusionProvider(VmProvider):
     def is_available(self) -> bool:
         return (
             _vmware_inventory_path().exists()
-            or shutil.which("vmrun") is not None
+            or _vmware_cli_path() is not None
             or Path("/Applications/VMware Fusion.app/Contents/Public/vmrun").exists()
         )
 
@@ -221,6 +231,26 @@ def get_provider(name: str) -> VmProvider:
     if name == PROVIDER_VMWARE_FUSION:
         return VmwareFusionProvider()
     return ParallelsProvider()
+
+
+def set_configured_executable(provider_name: str, executable_path: str) -> None:
+    if provider_name not in CONFIGURED_EXECUTABLES:
+        return
+    CONFIGURED_EXECUTABLES[provider_name] = executable_path.strip()
+
+
+def configured_executable(provider_name: str) -> str:
+    return CONFIGURED_EXECUTABLES.get(provider_name, "")
+
+
+def provider_unavailable_message(provider_name: str) -> str:
+    if provider_name == PROVIDER_PARALLELS:
+        search_locations = _executable_search_locations("prlctl", configured_executable(PROVIDER_PARALLELS))
+        search_text = ", ".join(search_locations)
+        return f"Parallels CLI 'prlctl' was not found. Checked: {search_text}. Configure it in the Parallels CLI path field if needed."
+    if provider_name == PROVIDER_VMWARE_FUSION:
+        return "VMware Fusion is not available on this Mac."
+    return f"{provider_label(provider_name)} is not available on this Mac."
 
 
 def _backup_path_for(path: Path) -> Path:
@@ -342,11 +372,76 @@ def _normalize_path(path: Path) -> Path:
 
 
 def _run_cli(command: list[str]) -> str:
-    result = subprocess.run(command, check=False, capture_output=True, text=True)
+    resolved_command = _resolve_command(command)
+    result = subprocess.run(resolved_command, check=False, capture_output=True, text=True)
     if result.returncode != 0:
         message = result.stderr.strip() or result.stdout.strip() or "Command failed"
         raise RuntimeError(message)
     return result.stdout
+
+
+def _resolve_command(command: list[str]) -> list[str]:
+    if not command:
+        raise ValueError("Command cannot be empty.")
+    executable_name = command[0]
+    if executable_name == "prlctl":
+        resolved = _parallels_cli_path()
+    elif executable_name == "vmrun":
+        resolved = _vmware_cli_path()
+    else:
+        resolved = _find_executable(executable_name)
+    return [resolved or command[0], *command[1:]]
+
+
+def _find_executable(name: str) -> str | None:
+    return _find_executable_with_config(name)
+
+
+def _find_executable_with_config(name: str, configured_path: str = "") -> str | None:
+    configured = _validated_executable_path(configured_path)
+    if configured is not None:
+        return configured
+    resolved = shutil.which(name)
+    if resolved is not None:
+        return resolved
+    for directory in COMMON_MACOS_BIN_DIRS:
+        candidate = directory / name
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
+def _validated_executable_path(configured_path: str) -> str | None:
+    if not configured_path.strip():
+        return None
+    candidate = Path(configured_path).expanduser()
+    if candidate.exists() and candidate.is_file() and os.access(candidate, os.X_OK):
+        return str(candidate)
+    return None
+
+
+def _executable_search_locations(name: str, configured_path: str = "") -> list[str]:
+    locations: list[str] = []
+    if configured_path.strip():
+        locations.append(str(Path(configured_path).expanduser()))
+    locations.append("PATH")
+    locations.extend(str(directory / name) for directory in COMMON_MACOS_BIN_DIRS)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for location in locations:
+        if location in seen:
+            continue
+        deduped.append(location)
+        seen.add(location)
+    return deduped
+
+
+def _parallels_cli_path() -> str | None:
+    return _find_executable_with_config("prlctl", configured_executable(PROVIDER_PARALLELS))
+
+
+def _vmware_cli_path() -> str | None:
+    return _find_executable_with_config("vmrun", configured_executable(PROVIDER_VMWARE_FUSION))
 
 
 def _parse_parallels_registered_vms(output: str) -> list[RegisteredVm]:

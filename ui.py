@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from file_ops import (
     CopyCancelledError,
+    PROVIDER_PARALLELS,
     PROVIDER_VMWARE_FUSION,
     RegisteredVm,
     VmSelection,
@@ -36,13 +37,16 @@ from file_ops import (
     can_write_to_file,
     can_write_to_folder,
     compute_total_size,
+    configured_executable,
     copy_tree_with_progress,
     default_provider_name,
     ensure_vm_bundle,
     get_provider,
     list_vm_bundles,
     provider_label,
+    provider_unavailable_message,
     remove_tree,
+    set_configured_executable,
     vm_bundle_suffix,
     VMWARE_FUSION_INVENTORY_PATH,
 )
@@ -88,6 +92,7 @@ class VmHandyWindow(QMainWindow):
         "source_vm_name": "",
         "local_vm_name": "",
         "registered_vm_id": "",
+        "parallels_cli_path": "",
     }
 
     def __init__(self) -> None:
@@ -96,6 +101,7 @@ class VmHandyWindow(QMainWindow):
 
         self.settings = QSettings(self.ORGANIZATION_NAME, self.APPLICATION_NAME)
         self._migrate_legacy_settings()
+        self._apply_provider_settings()
         self._registered_vms: list[RegisteredVm] = []
         self._thread: QThread | None = None
         self._worker: Worker | None = None
@@ -111,6 +117,8 @@ class VmHandyWindow(QMainWindow):
         self.source_folder_input.setPlaceholderText("Choose the remote VM folder")
         self.local_folder_input = QLineEdit()
         self.local_folder_input.setPlaceholderText("Choose a local destination folder")
+        self.parallels_cli_input = QLineEdit()
+        self.parallels_cli_input.setPlaceholderText("Optional: path to prlctl")
 
         self.source_list_label = QLabel("Remote folder VMs")
         self.local_list_label = QLabel("Local folder VMs")
@@ -153,6 +161,7 @@ class VmHandyWindow(QMainWindow):
         self.registered_vm_list.itemSelectionChanged.connect(self._on_registered_selection_changed)
         self.source_folder_input.editingFinished.connect(self._on_source_folder_changed)
         self.local_folder_input.editingFinished.connect(self._on_local_folder_changed)
+        self.parallels_cli_input.editingFinished.connect(self._on_parallels_cli_changed)
 
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -175,6 +184,8 @@ class VmHandyWindow(QMainWindow):
         self.source_browse_button.clicked.connect(self.choose_source_folder)
         self.local_browse_button = QPushButton("Browse Folder")
         self.local_browse_button.clicked.connect(self.choose_local_folder)
+        self.parallels_cli_browse_button = QPushButton("Browse CLI")
+        self.parallels_cli_browse_button.clicked.connect(self.choose_parallels_cli)
 
         layout.addWidget(QLabel("Provider"), 0, 0)
         layout.addWidget(self.provider_combo, 0, 1, 1, 2)
@@ -184,6 +195,9 @@ class VmHandyWindow(QMainWindow):
         layout.addWidget(QLabel("Local destination"), 2, 0)
         layout.addWidget(self.local_folder_input, 2, 1)
         layout.addWidget(self.local_browse_button, 2, 2)
+        layout.addWidget(QLabel("Parallels CLI path"), 3, 0)
+        layout.addWidget(self.parallels_cli_input, 3, 1)
+        layout.addWidget(self.parallels_cli_browse_button, 3, 2)
         return group
 
     def _build_vm_lists_group(self) -> QGroupBox:
@@ -221,6 +235,8 @@ class VmHandyWindow(QMainWindow):
 
     def _populate_provider_combo(self) -> None:
         selected = self._setting("provider", default_provider_name())
+        self.provider_combo.blockSignals(True)
+        self.provider_combo.clear()
         for name in available_provider_names():
             provider = get_provider(name)
             label = provider_label(name)
@@ -229,6 +245,7 @@ class VmHandyWindow(QMainWindow):
             self.provider_combo.addItem(label, name)
         index = self.provider_combo.findData(selected)
         self.provider_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.provider_combo.blockSignals(False)
 
     def choose_source_folder(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "Choose Remote VM Folder")
@@ -241,6 +258,18 @@ class VmHandyWindow(QMainWindow):
         if selected:
             self.local_folder_input.setText(selected)
             self._on_local_folder_changed()
+
+    def choose_parallels_cli(self) -> None:
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Choose prlctl Executable",
+            str(Path(configured_executable(PROVIDER_PARALLELS)).expanduser().parent)
+            if configured_executable(PROVIDER_PARALLELS)
+            else str(Path.home()),
+        )
+        if selected:
+            self.parallels_cli_input.setText(selected)
+            self._on_parallels_cli_changed()
 
     def current_provider_name(self) -> str:
         return str(self.provider_combo.currentData() or default_provider_name())
@@ -326,7 +355,7 @@ class VmHandyWindow(QMainWindow):
         self._registered_vms = []
 
         if not provider.is_available():
-            self._append_log(f"{provider.label} is not available on this Mac.")
+            self._append_log(provider_unavailable_message(provider.name))
             return
 
         try:
@@ -503,7 +532,7 @@ class VmHandyWindow(QMainWindow):
             self._show_error("Choose a local VM bundle to register first.")
             return
         if not provider.is_available():
-            self._show_error(f"{provider.label} is not available on this Mac.")
+            self._show_error(provider_unavailable_message(provider.name))
             return
         if not provider.supports_registration:
             self._show_error(self._registration_unavailable_message(provider))
@@ -533,7 +562,7 @@ class VmHandyWindow(QMainWindow):
             self._show_error("Choose a registered VM first.")
             return
         if not provider.is_available():
-            self._show_error(f"{provider.label} is not available on this Mac.")
+            self._show_error(provider_unavailable_message(provider.name))
             return
         if not provider.supports_unregistration:
             self._show_error(self._unregistration_unavailable_message(provider))
@@ -963,6 +992,14 @@ class VmHandyWindow(QMainWindow):
             selection_key="local_vm_name",
         )
 
+    def _on_parallels_cli_changed(self) -> None:
+        value = self.parallels_cli_input.text().strip()
+        self._set_setting("parallels_cli_path", value)
+        set_configured_executable(PROVIDER_PARALLELS, value)
+        self._populate_provider_combo()
+        self._update_window_title()
+        self.refresh_vm_lists()
+
     def _on_provider_changed(self) -> None:
         self._set_setting("provider", self.current_provider_name())
         self._set_setting("registered_vm_id", "")
@@ -1024,6 +1061,7 @@ class VmHandyWindow(QMainWindow):
     def _restore_settings(self) -> None:
         self.source_folder_input.setText(self._setting("source_folder"))
         self.local_folder_input.setText(self._setting("local_folder"))
+        self.parallels_cli_input.setText(self._setting("parallels_cli_path"))
         provider = self._setting("provider", default_provider_name())
         index = self.provider_combo.findData(provider)
         self.provider_combo.setCurrentIndex(index if index >= 0 else 0)
@@ -1039,11 +1077,15 @@ class VmHandyWindow(QMainWindow):
         self._set_setting("provider", self.current_provider_name())
         self._set_setting("source_folder", self.source_folder_input.text().strip())
         self._set_setting("local_folder", self.local_folder_input.text().strip())
+        self._set_setting("parallels_cli_path", self.parallels_cli_input.text().strip())
         self._set_setting("source_vm_name", self._selected_vm_name(self.source_vm_list) or "")
         self._set_setting("local_vm_name", self._selected_vm_name(self.local_vm_list) or "")
         self._set_setting("registered_vm_id", self._selected_registered_vm_id() or "")
         self._close_requested = False
         super().closeEvent(event)
+
+    def _apply_provider_settings(self) -> None:
+        set_configured_executable(PROVIDER_PARALLELS, self._setting("parallels_cli_path"))
 
     def _setting(self, key: str, default: str = "") -> str:
         value = self.settings.value(key, default)
