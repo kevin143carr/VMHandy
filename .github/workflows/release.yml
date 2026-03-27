@@ -46,9 +46,8 @@ jobs:
           mode: app
           enable-plugins: pyside6
           macos-app-name: VMHandy
-          nuitka-arguments: >-
-            --macos-app-icon=assets/vmhandy.icns
-            --include-data-files=assets/vmhandy.icns=assets/vmhandy.icns
+          macos-app-icon: assets/vmhandy.icns
+          include-data-files: assets/vmhandy.icns=assets/vmhandy.icns
 
       - name: Rename app bundle
         run: |
