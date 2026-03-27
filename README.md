@@ -81,3 +81,9 @@ python3.12 main.py
 - `main.py`: application entrypoint and Python version guard
 - `ui.py`: PySide6 window, actions, settings, and status UI
 - `file_ops.py`: VM bundle discovery, copy/delete helpers, and provider integrations
+- `assets/vmhandy.icns`: app icon used by the PySide6 application when run from the project
+
+## Build Assets
+
+- GitHub Actions macOS CI and release builds embed `assets/vmhandy.icns` into the generated `.app` bundle via Nuitka.
+- Source distributions also include `assets/vmhandy.icns` so release builds have the icon available in packaged source.
