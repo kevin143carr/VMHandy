@@ -261,6 +261,12 @@ def configured_executable(provider_name: str) -> str:
     return CONFIGURED_EXECUTABLES.get(provider_name, "")
 
 
+def resolved_executable_path(provider_name: str) -> str:
+    if provider_name == PROVIDER_VMWARE_FUSION:
+        return _vmware_cli_path() or ""
+    return _parallels_cli_path() or ""
+
+
 def parallels_running_vm_count() -> int:
     provider = ParallelsProvider()
     if not provider.is_available():

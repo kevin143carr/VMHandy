@@ -50,6 +50,7 @@ from file_ops import (
     quit_parallels_desktop,
     quit_vmware_fusion,
     remove_tree,
+    resolved_executable_path,
     set_configured_executable,
     vmware_running_vm_count,
     vm_bundle_suffix,
@@ -90,6 +91,13 @@ class Worker(QObject):
 class VmHandyWindow(QMainWindow):
     ORGANIZATION_NAME = "KevinCarr"
     APPLICATION_NAME = "VMHandy"
+    PROVIDER_SCOPED_SETTING_KEYS = {
+        "source_folder",
+        "local_folder",
+        "source_vm_name",
+        "local_vm_name",
+        "registered_vm_id",
+    }
     SETTINGS_DEFAULTS = {
         "provider": "",
         "source_folder": "",
@@ -316,9 +324,25 @@ class VmHandyWindow(QMainWindow):
         executable_name = self._provider_executable_name()
         provider_name = self.current_provider_name()
         provider_display = provider_label(provider_name)
+        configured_path = self._setting(self._provider_cli_setting_key(provider_name))
+        resolved_path = resolved_executable_path(provider_name)
         self.cli_path_label.setText(f"{provider_display} CLI path")
-        self.parallels_cli_input.setPlaceholderText(f"Optional: path to {executable_name}")
-        self.parallels_cli_input.setText(self._setting(self._provider_cli_setting_key(provider_name)))
+        self.parallels_cli_input.setPlaceholderText(
+            f"Optional: path to {executable_name}" if not resolved_path else f"Auto-detected: {resolved_path}"
+        )
+        self.parallels_cli_input.setText(configured_path or resolved_path)
+
+    def _save_provider_cli_setting(self, provider_name: str, value: str) -> None:
+        normalized_value = value.strip()
+        setting_key = self._provider_cli_setting_key(provider_name)
+        resolved_path = resolved_executable_path(provider_name)
+        if not normalized_value or normalized_value == resolved_path:
+            self.settings.remove(setting_key)
+            self.settings.sync()
+            set_configured_executable(provider_name, "")
+            return
+        self._set_setting(setting_key, normalized_value)
+        set_configured_executable(provider_name, normalized_value)
 
     def _provider_executable_name(self, provider_name: str | None = None) -> str:
         active_provider_name = provider_name or self.current_provider_name()
@@ -331,6 +355,38 @@ class VmHandyWindow(QMainWindow):
         if active_provider_name == PROVIDER_VMWARE_FUSION:
             return "vmware_fusion_cli_path"
         return "parallels_cli_path"
+
+    def _provider_state_setting_key(self, key: str, provider_name: str | None = None) -> str:
+        active_provider_name = provider_name or self.current_provider_name()
+        return f"{active_provider_name}_{key}"
+
+    def _provider_state_setting(self, key: str, provider_name: str | None = None, default: str = "") -> str:
+        scoped_key = self._provider_state_setting_key(key, provider_name)
+        if self.settings.contains(scoped_key):
+            return self._setting(scoped_key, default)
+        return self._setting(key, default)
+
+    def _set_provider_state_setting(self, key: str, value: str, provider_name: str | None = None) -> None:
+        self._set_setting(self._provider_state_setting_key(key, provider_name), value)
+
+    def _save_provider_ui_state(self, provider_name: str) -> None:
+        self._set_provider_state_setting("source_folder", self.source_folder_input.text().strip(), provider_name)
+        self._set_provider_state_setting("local_folder", self.local_folder_input.text().strip(), provider_name)
+        self._set_provider_state_setting("source_vm_name", self._selected_vm_name(self.source_vm_list) or "", provider_name)
+        self._set_provider_state_setting("local_vm_name", self._selected_vm_name(self.local_vm_list) or "", provider_name)
+        self._set_provider_state_setting(
+            "registered_vm_id",
+            self._selected_registered_vm_id() or "",
+            provider_name,
+        )
+        self._save_provider_cli_setting(provider_name, self.parallels_cli_input.text())
+
+    def _load_provider_ui_state(self, provider_name: str) -> None:
+        self.source_folder_input.setText(self._provider_state_setting("source_folder", provider_name))
+        self.local_folder_input.setText(self._provider_state_setting("local_folder", provider_name))
+        self.parallels_cli_input.setText(
+            self._setting(self._provider_cli_setting_key(provider_name)) or resolved_executable_path(provider_name)
+        )
 
     def refresh_or_cancel(self) -> None:
         if self._copy_in_progress:
@@ -348,14 +404,14 @@ class VmHandyWindow(QMainWindow):
         self._populate_bundle_list(
             self.source_vm_list,
             source_folder,
-            self._setting("source_vm_name"),
+            self._provider_state_setting("source_vm_name"),
         )
         self._populate_bundle_list(
             self.local_vm_list,
             local_folder,
-            self._setting("local_vm_name"),
+            self._provider_state_setting("local_vm_name"),
         )
-        self._refresh_registered_vm_list(provider, self._setting("registered_vm_id"))
+        self._refresh_registered_vm_list(provider, self._provider_state_setting("registered_vm_id"))
         self._update_action_states()
 
     def _refresh_registered_vm_list(self, provider=None, preferred_id: str = "") -> None:
@@ -1153,16 +1209,17 @@ class VmHandyWindow(QMainWindow):
     def _on_cli_path_changed(self) -> None:
         value = self.parallels_cli_input.text().strip()
         provider_name = self.current_provider_name()
-        self._set_setting(self._provider_cli_setting_key(provider_name), value)
-        set_configured_executable(provider_name, value)
+        self._save_provider_cli_setting(provider_name, value)
         self._populate_provider_combo()
         self._update_cli_path_ui()
         self._update_window_title()
         self.refresh_vm_lists()
 
     def _on_provider_changed(self) -> None:
+        previous_provider_name = self._setting("provider", default_provider_name())
+        self._save_provider_ui_state(previous_provider_name)
         self._set_setting("provider", self.current_provider_name())
-        self._set_setting("registered_vm_id", "")
+        self._load_provider_ui_state(self.current_provider_name())
         self._update_cli_path_ui()
         self._update_window_title()
         self.refresh_vm_lists()
@@ -1193,8 +1250,8 @@ class VmHandyWindow(QMainWindow):
         )
 
     def _handle_folder_change(self, *, field: QLineEdit, folder_key: str, selection_key: str) -> None:
-        self._set_setting(folder_key, field.text().strip())
-        self._set_setting(selection_key, "")
+        self._set_provider_state_setting(folder_key, field.text().strip())
+        self._set_provider_state_setting(selection_key, "")
         self.refresh_vm_lists()
 
     def _handle_selection_change(
@@ -1215,16 +1272,15 @@ class VmHandyWindow(QMainWindow):
                 widget.clearSelection()
                 widget.blockSignals(False)
             for key in cleared_keys:
-                self._set_setting(key, "")
-        self._set_setting(selected_key, selected_value)
+                self._set_provider_state_setting(key, "")
+        self._set_provider_state_setting(selected_key, selected_value)
         self._update_action_states()
 
     def _restore_settings(self) -> None:
-        self.source_folder_input.setText(self._setting("source_folder"))
-        self.local_folder_input.setText(self._setting("local_folder"))
         provider = self._setting("provider", default_provider_name())
         index = self.provider_combo.findData(provider)
         self.provider_combo.setCurrentIndex(index if index >= 0 else 0)
+        self._load_provider_ui_state(self.current_provider_name())
         self._update_cli_path_ui()
         self.refresh_vm_lists()
 
@@ -1236,12 +1292,7 @@ class VmHandyWindow(QMainWindow):
             return
 
         self._set_setting("provider", self.current_provider_name())
-        self._set_setting("source_folder", self.source_folder_input.text().strip())
-        self._set_setting("local_folder", self.local_folder_input.text().strip())
-        self._set_setting(self._provider_cli_setting_key(), self.parallels_cli_input.text().strip())
-        self._set_setting("source_vm_name", self._selected_vm_name(self.source_vm_list) or "")
-        self._set_setting("local_vm_name", self._selected_vm_name(self.local_vm_list) or "")
-        self._set_setting("registered_vm_id", self._selected_registered_vm_id() or "")
+        self._save_provider_ui_state(self.current_provider_name())
         self._close_requested = False
         super().closeEvent(event)
 
