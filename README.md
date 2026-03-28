@@ -67,6 +67,23 @@ VMHandy is a macOS desktop utility for managing virtual machine bundles between 
 - For Parallels integration: `prlctl` available on `PATH`
 - For VMware Fusion integration: a readable `vmInventory` file, and a writable one for register/unregister actions
 
+## Downloads
+
+End-user releases are published on the GitHub Releases page:
+
+- Latest release: https://github.com/kevin143carr/VMHandy/releases/latest
+
+Each release includes two macOS app downloads:
+
+- `VMHandy-macOS-arm64-vX.Y.Z.zip`: for Apple Silicon Macs (`M1`, `M2`, `M3`, `M4`)
+- `VMHandy-macOS-intel-vX.Y.Z.zip`: for Intel Macs
+
+After downloading:
+
+1. Unzip the archive.
+2. Move `VMHandy.app` to `Applications` if you want.
+3. Open the app.
+
 ## Run Locally
 
 Install in editable mode:
@@ -89,7 +106,8 @@ python3.12 main.py
 - `file_ops.py`: VM bundle discovery, copy/delete helpers, and provider integrations
 - `assets/vmhandy.icns`: app icon used by the PySide6 application when run from the project
 
-## Build Assets
+## Release Notes
 
-- GitHub Actions macOS CI and release builds embed `assets/vmhandy.icns` into the generated `.app` bundle via Nuitka.
-- Source distributions also include `assets/vmhandy.icns` so release builds have the icon available in packaged source.
+- GitHub Releases are packaged `.app` bundles zipped for macOS distribution.
+- CI and release builds embed `assets/vmhandy.icns` into the generated app via Nuitka.
+- Source distributions are build artifacts for development and packaging, not the recommended download for end users.
