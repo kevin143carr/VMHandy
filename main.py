@@ -80,18 +80,25 @@ def _show_startup_splash(app: QApplication, window: QWidget, icon_path: Path | N
     available_families = set(QFontDatabase.families())
     title_family = "Avenir Next" if "Avenir Next" in available_families else "Helvetica Neue"
     body_family = "Avenir Next" if "Avenir Next" in available_families else "SF Pro Text"
+    border_width = 10
+    corner_radius = 18
 
     splash = QDialog(window, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
     splash.setModal(False)
     splash.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+    splash.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
     splash.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-    splash.setFixedSize(620, 300)
+    splash.setFixedSize(620 + (border_width * 2), 300 + (border_width * 2))
     splash.setStyleSheet(
         """
         QDialog {
+            background: transparent;
+            border: none;
+        }
+        QWidget#card {
             background: #f5f3ee;
-            border: 1px solid #d3c5b8;
-            border-radius: 18px;
+            border: %dpx solid #c66b3d;
+            border-radius: %dpx;
         }
         QLabel#title {
             color: #1f1a17;
@@ -120,26 +127,24 @@ def _show_startup_splash(app: QApplication, window: QWidget, icon_path: Path | N
             font-weight: 500;
         }
         """
-        % (title_family, body_family, title_family, body_family)
+        % (border_width, corner_radius, title_family, body_family, title_family, body_family)
     )
     if icon_path is not None:
         splash.setWindowIcon(QIcon(str(icon_path)))
 
     layout = QVBoxLayout(splash)
-    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setContentsMargins(border_width, border_width, border_width, border_width)
     layout.setSpacing(0)
 
-    accent = QWidget(splash)
-    accent.setFixedHeight(8)
-    accent.setStyleSheet("background: #c66b3d; border: none; border-top-left-radius: 18px; border-top-right-radius: 18px;")
-    layout.addWidget(accent)
+    card = QWidget(splash)
+    card.setObjectName("card")
+    layout.addWidget(card)
 
-    content = QWidget(splash)
-    content_layout = QHBoxLayout(content)
-    content_layout.setContentsMargins(42, 38, 42, 30)
+    content_layout = QHBoxLayout(card)
+    content_layout.setContentsMargins(42, 42, 42, 30)
     content_layout.setSpacing(24)
 
-    icon_label = QLabel(content)
+    icon_label = QLabel(card)
     icon_label.setFixedSize(176, 176)
     icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
     icon_pixmap = _build_splash_pixmap(icon_path).copy(28, 40, 176, 176)
@@ -149,32 +154,31 @@ def _show_startup_splash(app: QApplication, window: QWidget, icon_path: Path | N
     text_layout = QVBoxLayout()
     text_layout.setSpacing(8)
 
-    title_label = QLabel("VMHandy", content)
+    title_label = QLabel("VMHandy", card)
     title_label.setObjectName("title")
     text_layout.addWidget(title_label)
 
-    line_one = QLabel("Move virtual machine bundles between", content)
+    line_one = QLabel("Move virtual machine bundles between", card)
     line_one.setObjectName("body")
     text_layout.addWidget(line_one)
 
-    line_two = QLabel("external and local storage with less friction.", content)
+    line_two = QLabel("external and local storage with less friction.", card)
     line_two.setObjectName("body")
     text_layout.addWidget(line_two)
 
     text_layout.addSpacing(16)
 
-    author_label = QLabel("Author: Kevin Carr", content)
+    author_label = QLabel("Author: Kevin Carr", card)
     author_label.setObjectName("author")
     text_layout.addWidget(author_label)
 
     text_layout.addStretch(1)
 
-    footer_label = QLabel("Parallels and VMware Fusion utility for macOS", content)
+    footer_label = QLabel("Parallels and VMware Fusion utility for macOS", card)
     footer_label.setObjectName("footer")
     text_layout.addWidget(footer_label)
 
     content_layout.addLayout(text_layout, 1)
-    layout.addWidget(content)
 
     window_rect = window.frameGeometry()
     splash_rect = splash.frameGeometry()
