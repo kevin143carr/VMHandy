@@ -28,6 +28,8 @@ COMMON_MACOS_BIN_DIRS = (
     Path("/usr/bin"),
     Path("/bin"),
 )
+PARALLELS_APP_NAME = "Parallels Desktop"
+VMWARE_FUSION_APP_NAME = "VMware Fusion"
 CONFIGURED_EXECUTABLES: dict[str, str] = {
     PROVIDER_PARALLELS: "",
     PROVIDER_VMWARE_FUSION: "",
@@ -61,6 +63,7 @@ class VmProvider:
     label = ""
     supports_registration = False
     supports_unregistration = False
+    supports_launch = False
 
     def is_available(self) -> bool:
         raise NotImplementedError
@@ -72,6 +75,9 @@ class VmProvider:
         raise NotImplementedError
 
     def unregister_vm(self, vm_id: str) -> None:
+        raise NotImplementedError
+
+    def launch_vm(self, vm: RegisteredVm) -> None:
         raise NotImplementedError
 
     def find_registered_vm(self, vm_path: Path) -> RegisteredVm | None:
@@ -87,6 +93,7 @@ class ParallelsProvider(VmProvider):
     label = PROVIDER_LABELS[PROVIDER_PARALLELS]
     supports_registration = True
     supports_unregistration = True
+    supports_launch = True
 
     def is_available(self) -> bool:
         return _parallels_cli_path() is not None
@@ -104,10 +111,15 @@ class ParallelsProvider(VmProvider):
     def unregister_vm(self, vm_id: str) -> None:
         _run_cli(["prlctl", "unregister", vm_id])
 
+    def launch_vm(self, vm: RegisteredVm) -> None:
+        ensure_pvm(vm.path)
+        _run_cli(["open", "-g", "-a", "Parallels Desktop", str(vm.path)])
+
 
 class VmwareFusionProvider(VmProvider):
     name = PROVIDER_VMWARE_FUSION
     label = PROVIDER_LABELS[PROVIDER_VMWARE_FUSION]
+    supports_launch = True
 
     def is_available(self) -> bool:
         return (
@@ -148,6 +160,12 @@ class VmwareFusionProvider(VmProvider):
         if not _is_writable_file(inventory_path):
             raise PermissionError(f"VMware Fusion inventory file is not writable: {inventory_path}")
         _unregister_vmware_inventory_vm(inventory_path, vm_id)
+
+    def launch_vm(self, vm: RegisteredVm) -> None:
+        vmx_path = Path(vm.id).expanduser()
+        if vmx_path.suffix.lower() != ".vmx" or not vmx_path.exists():
+            vmx_path = _find_vmware_vmx(vm.path)
+        _run_cli(["vmrun", "-T", "fusion", "start", str(vmx_path)])
 
 
 def ensure_vm_bundle(path: Path, provider_name: str) -> None:
@@ -241,6 +259,65 @@ def set_configured_executable(provider_name: str, executable_path: str) -> None:
 
 def configured_executable(provider_name: str) -> str:
     return CONFIGURED_EXECUTABLES.get(provider_name, "")
+
+
+def parallels_running_vm_count() -> int:
+    provider = ParallelsProvider()
+    if not provider.is_available():
+        return 0
+    output = _run_cli(["prlctl", "list", "--no-header"])
+    return len([line for line in output.splitlines() if line.strip()])
+
+
+def vmware_running_vm_count() -> int:
+    provider = VmwareFusionProvider()
+    if not provider.is_available():
+        return 0
+    output = _run_cli(["vmrun", "-T", "fusion", "list"])
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not lines:
+        return 0
+    return max(len(lines) - 1, 0)
+
+
+def minimize_parallels_control_center() -> str:
+    script = f"""
+tell application "System Events"
+    if not (exists process "{PARALLELS_APP_NAME}") then
+        return "process-missing"
+    end if
+    tell process "{PARALLELS_APP_NAME}"
+        repeat with targetWindow in windows
+            try
+                set windowTitle to name of targetWindow
+            on error
+                set windowTitle to ""
+            end try
+            if windowTitle contains "Control Center" then
+                try
+                    set value of attribute "AXMinimized" of targetWindow to true
+                    return "minimized"
+                on error errorMessage
+                    return "error:" & errorMessage
+                end try
+            end if
+        end repeat
+    end tell
+end tell
+return "not-found"
+"""
+    try:
+        return _run_osascript(script).strip() or "unknown"
+    except Exception as exc:  # noqa: BLE001
+        return f"error:{exc}"
+
+
+def quit_parallels_desktop() -> None:
+    _run_osascript(f'tell application "{PARALLELS_APP_NAME}" to quit')
+
+
+def quit_vmware_fusion() -> None:
+    _run_osascript(f'tell application "{VMWARE_FUSION_APP_NAME}" to quit')
 
 
 def provider_unavailable_message(provider_name: str) -> str:
@@ -376,6 +453,14 @@ def _run_cli(command: list[str]) -> str:
     result = subprocess.run(resolved_command, check=False, capture_output=True, text=True)
     if result.returncode != 0:
         message = result.stderr.strip() or result.stdout.strip() or "Command failed"
+        raise RuntimeError(message)
+    return result.stdout
+
+
+def _run_osascript(script: str) -> str:
+    result = subprocess.run(["osascript", "-e", script], check=False, capture_output=True, text=True)
+    if result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip() or "osascript failed"
         raise RuntimeError(message)
     return result.stdout
 

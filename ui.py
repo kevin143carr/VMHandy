@@ -43,10 +43,15 @@ from file_ops import (
     ensure_vm_bundle,
     get_provider,
     list_vm_bundles,
+    minimize_parallels_control_center,
+    parallels_running_vm_count,
     provider_label,
     provider_unavailable_message,
+    quit_parallels_desktop,
+    quit_vmware_fusion,
     remove_tree,
     set_configured_executable,
+    vmware_running_vm_count,
     vm_bundle_suffix,
     VMWARE_FUSION_INVENTORY_PATH,
 )
@@ -93,6 +98,7 @@ class VmHandyWindow(QMainWindow):
         "local_vm_name": "",
         "registered_vm_id": "",
         "parallels_cli_path": "",
+        "vmware_fusion_cli_path": "",
     }
 
     def __init__(self) -> None:
@@ -109,6 +115,25 @@ class VmHandyWindow(QMainWindow):
         self._copy_in_progress = False
         self._cancellation_requested = False
         self._close_requested = False
+        self._active_launch_provider_name: str | None = None
+        self._parallels_seen_running_vm = False
+        self._vmware_seen_running_vm = False
+
+        self._parallels_post_launch_timer = QTimer(self)
+        self._parallels_post_launch_timer.setSingleShot(True)
+        self._parallels_post_launch_timer.timeout.connect(self._minimize_parallels_control_center)
+
+        self._parallels_shutdown_timer = QTimer(self)
+        self._parallels_shutdown_timer.setInterval(5000)
+        self._parallels_shutdown_timer.timeout.connect(self._monitor_parallels_shutdown)
+
+        self._vmware_shutdown_timer = QTimer(self)
+        self._vmware_shutdown_timer.setInterval(5000)
+        self._vmware_shutdown_timer.timeout.connect(self._monitor_vmware_shutdown)
+
+        self._registered_vm_refresh_timer = QTimer(self)
+        self._registered_vm_refresh_timer.setInterval(5000)
+        self._registered_vm_refresh_timer.timeout.connect(self._refresh_registered_vm_list_if_idle)
 
         self.provider_combo = QComboBox()
         self._populate_provider_combo()
@@ -118,7 +143,7 @@ class VmHandyWindow(QMainWindow):
         self.local_folder_input = QLineEdit()
         self.local_folder_input.setPlaceholderText("Choose a local destination folder")
         self.parallels_cli_input = QLineEdit()
-        self.parallels_cli_input.setPlaceholderText("Optional: path to prlctl")
+        self.cli_path_label = QLabel()
 
         self.source_list_label = QLabel("Remote folder VMs")
         self.local_list_label = QLabel("Local folder VMs")
@@ -147,6 +172,7 @@ class VmHandyWindow(QMainWindow):
         self.replace_button = QPushButton("Copy VM To Remote")
         self.register_button = QPushButton("Register")
         self.unregister_button = QPushButton("Unregister")
+        self.launch_button = QPushButton("Launch VM")
         self.refresh_button = QPushButton("Refresh Lists")
 
         self.copy_button.clicked.connect(self.copy_to_local)
@@ -154,6 +180,7 @@ class VmHandyWindow(QMainWindow):
         self.replace_button.clicked.connect(self.copy_to_remote)
         self.register_button.clicked.connect(self.register_selected_vm)
         self.unregister_button.clicked.connect(self.unregister_selected_vm)
+        self.launch_button.clicked.connect(self.launch_selected_vm)
         self.refresh_button.clicked.connect(self.refresh_or_cancel)
         self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
         self.source_vm_list.itemSelectionChanged.connect(self._on_source_selection_changed)
@@ -161,7 +188,7 @@ class VmHandyWindow(QMainWindow):
         self.registered_vm_list.itemSelectionChanged.connect(self._on_registered_selection_changed)
         self.source_folder_input.editingFinished.connect(self._on_source_folder_changed)
         self.local_folder_input.editingFinished.connect(self._on_local_folder_changed)
-        self.parallels_cli_input.editingFinished.connect(self._on_parallels_cli_changed)
+        self.parallels_cli_input.editingFinished.connect(self._on_cli_path_changed)
 
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -175,6 +202,7 @@ class VmHandyWindow(QMainWindow):
         self._restore_settings()
         self._update_window_title()
         self._update_action_states()
+        self._registered_vm_refresh_timer.start()
 
     def _build_paths_group(self) -> QGroupBox:
         group = QGroupBox("Paths")
@@ -185,7 +213,7 @@ class VmHandyWindow(QMainWindow):
         self.local_browse_button = QPushButton("Browse Folder")
         self.local_browse_button.clicked.connect(self.choose_local_folder)
         self.parallels_cli_browse_button = QPushButton("Browse CLI")
-        self.parallels_cli_browse_button.clicked.connect(self.choose_parallels_cli)
+        self.parallels_cli_browse_button.clicked.connect(self.choose_provider_cli)
 
         layout.addWidget(QLabel("Provider"), 0, 0)
         layout.addWidget(self.provider_combo, 0, 1, 1, 2)
@@ -195,7 +223,7 @@ class VmHandyWindow(QMainWindow):
         layout.addWidget(QLabel("Local destination"), 2, 0)
         layout.addWidget(self.local_folder_input, 2, 1)
         layout.addWidget(self.local_browse_button, 2, 2)
-        layout.addWidget(QLabel("Parallels CLI path"), 3, 0)
+        layout.addWidget(self.cli_path_label, 3, 0)
         layout.addWidget(self.parallels_cli_input, 3, 1)
         layout.addWidget(self.parallels_cli_browse_button, 3, 2)
         return group
@@ -221,6 +249,7 @@ class VmHandyWindow(QMainWindow):
         layout.addWidget(self.replace_button)
         layout.addWidget(self.register_button)
         layout.addWidget(self.unregister_button)
+        layout.addWidget(self.launch_button)
         layout.addWidget(self.delete_button)
         layout.addWidget(self.refresh_button)
         return group
@@ -259,17 +288,19 @@ class VmHandyWindow(QMainWindow):
             self.local_folder_input.setText(selected)
             self._on_local_folder_changed()
 
-    def choose_parallels_cli(self) -> None:
+    def choose_provider_cli(self) -> None:
+        provider_name = self.current_provider_name()
+        executable_name = self._provider_executable_name()
         selected, _ = QFileDialog.getOpenFileName(
             self,
-            "Choose prlctl Executable",
-            str(Path(configured_executable(PROVIDER_PARALLELS)).expanduser().parent)
-            if configured_executable(PROVIDER_PARALLELS)
+            f"Choose {executable_name} Executable",
+            str(Path(configured_executable(provider_name)).expanduser().parent)
+            if configured_executable(provider_name)
             else str(Path.home()),
         )
         if selected:
             self.parallels_cli_input.setText(selected)
-            self._on_parallels_cli_changed()
+            self._on_cli_path_changed()
 
     def current_provider_name(self) -> str:
         return str(self.provider_combo.currentData() or default_provider_name())
@@ -280,6 +311,26 @@ class VmHandyWindow(QMainWindow):
     def _update_window_title(self) -> None:
         provider = self.current_provider()
         self.setWindowTitle(f"VMHandy [{provider.label}]")
+
+    def _update_cli_path_ui(self) -> None:
+        executable_name = self._provider_executable_name()
+        provider_name = self.current_provider_name()
+        provider_display = provider_label(provider_name)
+        self.cli_path_label.setText(f"{provider_display} CLI path")
+        self.parallels_cli_input.setPlaceholderText(f"Optional: path to {executable_name}")
+        self.parallels_cli_input.setText(self._setting(self._provider_cli_setting_key(provider_name)))
+
+    def _provider_executable_name(self, provider_name: str | None = None) -> str:
+        active_provider_name = provider_name or self.current_provider_name()
+        if active_provider_name == PROVIDER_VMWARE_FUSION:
+            return "vmrun"
+        return "prlctl"
+
+    def _provider_cli_setting_key(self, provider_name: str | None = None) -> str:
+        active_provider_name = provider_name or self.current_provider_name()
+        if active_provider_name == PROVIDER_VMWARE_FUSION:
+            return "vmware_fusion_cli_path"
+        return "parallels_cli_path"
 
     def refresh_or_cancel(self) -> None:
         if self._copy_in_progress:
@@ -304,11 +355,17 @@ class VmHandyWindow(QMainWindow):
             local_folder,
             self._setting("local_vm_name"),
         )
-        self._populate_registered_vm_list(
-            provider,
-            self._setting("registered_vm_id"),
-        )
+        self._refresh_registered_vm_list(provider, self._setting("registered_vm_id"))
         self._update_action_states()
+
+    def _refresh_registered_vm_list(self, provider=None, preferred_id: str = "") -> None:
+        active_provider = provider or self.current_provider()
+        self._populate_registered_vm_list(active_provider, preferred_id)
+
+    def _refresh_registered_vm_list_if_idle(self) -> None:
+        if self._thread is not None and self._thread.isRunning():
+            return
+        self._refresh_registered_vm_list(preferred_id=self._selected_registered_vm_id() or "")
 
     def _set_list_labels(self, source_folder: Path | None, local_folder: Path | None, provider_name: str) -> None:
         source_text = str(source_folder) if source_folder is not None else "No folder selected"
@@ -583,6 +640,30 @@ class VmHandyWindow(QMainWindow):
             )
         )
 
+    def launch_selected_vm(self) -> None:
+        provider = self.current_provider()
+        registered_vm = self._selected_registered_vm()
+        if registered_vm is None:
+            self._show_error("Choose a registered VM first.")
+            return
+        if not provider.is_available():
+            self._show_error(provider_unavailable_message(provider.name))
+            return
+        if not provider.supports_launch:
+            self._show_error(f"{provider.label} launch is not supported yet.")
+            return
+
+        self._append_log(f"About to: launch {registered_vm.name} in {provider.label}.")
+        self._active_launch_provider_name = provider.name
+        self._parallels_seen_running_vm = False
+        self._vmware_seen_running_vm = False
+        self._run_action(
+            PendingAction(
+                label="Launch VM completed",
+                runner=lambda: provider.launch_vm(registered_vm),
+            )
+        )
+
     def _guard_selection(self) -> VmSelection | None:
         try:
             return self.current_selection()
@@ -744,22 +825,32 @@ class VmHandyWindow(QMainWindow):
         self.progress_bar.setValue(100)
         self.status_label.setText(label)
         self._append_log(label)
+        if label == "Launch VM completed" and self._active_launch_provider_name == PROVIDER_PARALLELS:
+            self._parallels_post_launch_timer.start(1500)
+            if not self._parallels_shutdown_timer.isActive():
+                self._parallels_shutdown_timer.start()
+        if label == "Launch VM completed" and self._active_launch_provider_name == PROVIDER_VMWARE_FUSION:
+            if not self._vmware_shutdown_timer.isActive():
+                self._vmware_shutdown_timer.start()
         if self.current_provider_name() == PROVIDER_VMWARE_FUSION and label in {
             "Register VM completed",
             "Unregister VM completed",
             "Unregister and delete local copy completed",
         }:
             self._append_log("VMware Fusion may need to be restarted if its library does not refresh automatically.")
+        self._active_launch_provider_name = None
 
     def _on_cancelled(self, message: str) -> None:
         self.progress_bar.setValue(0)
         self.status_label.setText(message)
         self._append_log(message)
+        self._active_launch_provider_name = None
 
     def _on_failed(self, message: str) -> None:
         self.status_label.setText("Action failed")
         self._append_log(f"Error: {message}")
         self._show_error(message)
+        self._active_launch_provider_name = None
 
     def _cleanup_thread(self) -> None:
         if self._worker is not None:
@@ -821,6 +912,65 @@ class VmHandyWindow(QMainWindow):
 
     def _append_log(self, message: str) -> None:
         self.log_output.appendPlainText(message)
+
+    def _minimize_parallels_control_center(self) -> None:
+        result = minimize_parallels_control_center()
+        if result == "minimized":
+            self._append_log("Minimized the Parallels Control Center window.")
+            return
+        if result == "not-found":
+            return
+        if result == "process-missing":
+            self._append_log("Parallels Desktop is not running yet, so there was no Control Center window to minimize.")
+            return
+        self._append_log(
+            "Unable to minimize the Parallels Control Center window. "
+            "Check macOS Accessibility permissions if this should be automated."
+        )
+
+    def _monitor_parallels_shutdown(self) -> None:
+        try:
+            running_count = parallels_running_vm_count()
+        except Exception as exc:  # noqa: BLE001
+            self._append_log(f"Unable to check running Parallels VMs: {exc}")
+            self._parallels_shutdown_timer.stop()
+            return
+
+        if running_count > 0:
+            self._parallels_seen_running_vm = True
+            return
+        if not self._parallels_seen_running_vm:
+            return
+
+        self._parallels_shutdown_timer.stop()
+        try:
+            quit_parallels_desktop()
+        except Exception as exc:  # noqa: BLE001
+            self._append_log(f"All Parallels VMs are stopped, but VMHandy could not quit Parallels Desktop: {exc}")
+            return
+        self._append_log("All Parallels VMs are stopped. Closed Parallels Desktop.")
+
+    def _monitor_vmware_shutdown(self) -> None:
+        try:
+            running_count = vmware_running_vm_count()
+        except Exception as exc:  # noqa: BLE001
+            self._append_log(f"Unable to check running VMware Fusion VMs: {exc}")
+            self._vmware_shutdown_timer.stop()
+            return
+
+        if running_count > 0:
+            self._vmware_seen_running_vm = True
+            return
+        if not self._vmware_seen_running_vm:
+            return
+
+        self._vmware_shutdown_timer.stop()
+        try:
+            quit_vmware_fusion()
+        except Exception as exc:  # noqa: BLE001
+            self._append_log(f"All VMware Fusion VMs are stopped, but VMHandy could not quit VMware Fusion: {exc}")
+            return
+        self._append_log("All VMware Fusion VMs are stopped. Closed VMware Fusion.")
 
     def _sync_refresh_button(self) -> None:
         if self._copy_in_progress:
@@ -889,6 +1039,12 @@ class VmHandyWindow(QMainWindow):
             and provider.is_available()
             and provider.supports_unregistration
         )
+        launch_enabled = (
+            not action_running
+            and registered_selected
+            and provider.is_available()
+            and provider.supports_launch
+        )
         refresh_enabled = (self._copy_in_progress and not cancellation_pending) or not action_running
         controls_locked = self._copy_in_progress
 
@@ -898,6 +1054,7 @@ class VmHandyWindow(QMainWindow):
             self.replace_button.setEnabled(False)
             self.register_button.setEnabled(False)
             self.unregister_button.setEnabled(False)
+            self.launch_button.setEnabled(False)
             self.refresh_button.setEnabled(not cancellation_pending)
             self.provider_combo.setEnabled(False)
             self.source_folder_input.setEnabled(False)
@@ -920,6 +1077,7 @@ class VmHandyWindow(QMainWindow):
         self.replace_button.setEnabled(replace_enabled)
         self.register_button.setEnabled(register_enabled)
         self.unregister_button.setEnabled(unregister_enabled)
+        self.launch_button.setEnabled(launch_enabled)
         self.refresh_button.setEnabled(refresh_enabled)
         self.provider_combo.setEnabled(not controls_locked)
         self.source_folder_input.setEnabled(not controls_locked)
@@ -992,17 +1150,20 @@ class VmHandyWindow(QMainWindow):
             selection_key="local_vm_name",
         )
 
-    def _on_parallels_cli_changed(self) -> None:
+    def _on_cli_path_changed(self) -> None:
         value = self.parallels_cli_input.text().strip()
-        self._set_setting("parallels_cli_path", value)
-        set_configured_executable(PROVIDER_PARALLELS, value)
+        provider_name = self.current_provider_name()
+        self._set_setting(self._provider_cli_setting_key(provider_name), value)
+        set_configured_executable(provider_name, value)
         self._populate_provider_combo()
+        self._update_cli_path_ui()
         self._update_window_title()
         self.refresh_vm_lists()
 
     def _on_provider_changed(self) -> None:
         self._set_setting("provider", self.current_provider_name())
         self._set_setting("registered_vm_id", "")
+        self._update_cli_path_ui()
         self._update_window_title()
         self.refresh_vm_lists()
 
@@ -1061,10 +1222,10 @@ class VmHandyWindow(QMainWindow):
     def _restore_settings(self) -> None:
         self.source_folder_input.setText(self._setting("source_folder"))
         self.local_folder_input.setText(self._setting("local_folder"))
-        self.parallels_cli_input.setText(self._setting("parallels_cli_path"))
         provider = self._setting("provider", default_provider_name())
         index = self.provider_combo.findData(provider)
         self.provider_combo.setCurrentIndex(index if index >= 0 else 0)
+        self._update_cli_path_ui()
         self.refresh_vm_lists()
 
     def closeEvent(self, event) -> None:  # noqa: N802
@@ -1077,7 +1238,7 @@ class VmHandyWindow(QMainWindow):
         self._set_setting("provider", self.current_provider_name())
         self._set_setting("source_folder", self.source_folder_input.text().strip())
         self._set_setting("local_folder", self.local_folder_input.text().strip())
-        self._set_setting("parallels_cli_path", self.parallels_cli_input.text().strip())
+        self._set_setting(self._provider_cli_setting_key(), self.parallels_cli_input.text().strip())
         self._set_setting("source_vm_name", self._selected_vm_name(self.source_vm_list) or "")
         self._set_setting("local_vm_name", self._selected_vm_name(self.local_vm_list) or "")
         self._set_setting("registered_vm_id", self._selected_registered_vm_id() or "")
@@ -1086,6 +1247,7 @@ class VmHandyWindow(QMainWindow):
 
     def _apply_provider_settings(self) -> None:
         set_configured_executable(PROVIDER_PARALLELS, self._setting("parallels_cli_path"))
+        set_configured_executable(PROVIDER_VMWARE_FUSION, self._setting("vmware_fusion_cli_path"))
 
     def _setting(self, key: str, default: str = "") -> str:
         value = self.settings.value(key, default)

@@ -1,6 +1,6 @@
 # VMHandy
 
-VMHandy is a macOS desktop utility for managing virtual machine bundles between a removable or remote folder and a local working folder. It provides a PySide6 GUI for copying, deleting, registering, and unregistering Parallels and VMware Fusion VMs.
+VMHandy is a macOS desktop utility for managing virtual machine bundles between a removable or remote folder and a local working folder. It provides a PySide6 GUI for copying, deleting, registering, unregistering, and launching Parallels and VMware Fusion VMs.
 
 ## What It Does
 
@@ -13,6 +13,7 @@ VMHandy is a macOS desktop utility for managing virtual machine bundles between 
 - Show the selected provider's registered VM inventory.
 - Register a local VM with the selected provider.
 - Unregister a registered VM from the selected provider.
+- Launch a registered VM from the selected provider.
 - Cancel an in-progress copy operation.
 - Persist the selected provider, folders, and current selections using Qt user settings on macOS.
 
@@ -24,12 +25,16 @@ VMHandy is a macOS desktop utility for managing virtual machine bundles between 
 - Uses `prlctl` to list registered VMs.
 - Registers VMs with `prlctl register --preserve-uuid`.
 - Unregisters VMs with `prlctl unregister`.
+- Launches registered VMs by opening the `.pvm` bundle in Parallels Desktop.
+- Attempts to minimize the Parallels Control Center after launch and quits Parallels Desktop after the last running VM stops.
 
 ### VMware Fusion
 
 - Detects `.vmwarevm` bundles in the selected folders.
 - Reads registered VMs from `~/Library/Application Support/VMware Fusion/vmInventory`.
 - Registers and unregisters VMs by updating the Fusion inventory file directly.
+- Launches registered VMs with `vmrun -T fusion start`.
+- Quits VMware Fusion after the last running VM stops.
 - Creates a timestamped backup of the inventory file before rewriting it.
 - May require restarting VMware Fusion if its library does not refresh after a register or unregister action.
 
@@ -40,7 +45,8 @@ VMHandy is a macOS desktop utility for managing virtual machine bundles between 
 3. Choose the remote VM folder and local destination folder.
 4. Select a VM in the remote list and use `Copy To Local` to bring it onto local storage.
 5. Optionally register the local VM with the selected provider.
-6. When finished, either keep the local copy, delete it, or use `Copy VM To Remote` to push it back to the source folder.
+6. Optionally select the VM in `Registered VMs` and use `Launch VM`.
+7. When finished, either keep the local copy, delete it, or use `Copy VM To Remote` to push it back to the source folder.
 
 ## Safety Checks And Behavior
 
