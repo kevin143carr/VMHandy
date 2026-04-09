@@ -1,0 +1,46 @@
+Stop. [pause]
+Stop doing this to yourself. [pause]
+
+You have got a Parallels VM on one drive, [pause]
+a VMware Fusion VM on another, [pause]
+a local copy on your Mac, [pause]
+and a registered copy you forgot about. [pause]
+
+Why? [pause]
+VMHandy. [pause]
+
+VMHandy takes your giant virtual machine headache [pause]
+and turns it into click, [pause] click, [pause] click, [pause] done. [pause]
+
+Need that VM on your Mac? [pause]
+Copy To Local. [pause]
+
+Need it registered? [pause]
+Register. [pause]
+
+Need it running? [pause]
+Launch VM. [pause]
+
+That is it. [pause]
+
+No command-line circus. [pause]
+No mystery bundles. [pause]
+No wasted time digging through folders. [pause]
+
+Parallels? [pause]
+Handled. [pause]
+
+VMware Fusion? [pause]
+Handled. [pause]
+
+Bring it local. [pause]
+Spin it up. [pause]
+Do your work. [pause]
+Push it back. [pause]
+Clean it up. [pause]
+Move on. [pause]
+
+VMHandy. [pause]
+Copy it. [pause]
+Launch it. [pause]
+Move on. [pause]
